@@ -16,18 +16,30 @@ function load_dataset(f::JLDFile, offset::RelOffset)
 
     io = f.io
     seek(io, fileoffset(f, offset))
-    sz, version = read_obj_start(io)
-    println("Obj header is V$(version)")
-    if version == 1
-        return load_v1_dataset(f, offset)
+     # Test for object header version
+    header_version = jlread(io, UInt8)
+    if header_version == 1
+        cio = io
+        jlread(cio, UInt8)
+        num_messages = jlread(cio, UInt16)
+        obj_ref_count = jlread(cio, UInt32)
+        obj_header_size = jlread(cio, UInt32)
+        # println("Reading $num_messages Messages")
+        # println("obj_ref_count = $obj_ref_count")
+        # println("obj_header_size = $obj_header_size")
+
+        chunk_end = position(cio) + obj_header_size
+        # Skip to nearest 8byte aligned position
+        curpos = position(cio)
+        seek(cio, curpos + 8 - mod1(curpos, 8))
+    elseif header_version == 2
+        seek(io, fileoffset(f, offset))
+        cio = begin_checksum_read(io)
+        sz, version = read_obj_start(cio)
+        chunk_end = position(cio) + sz #- 4
+    else
+        throw(UnsupportedVersionException("Unknown object header version $header_version"))
     end
-    seek(io, fileoffset(f, offset))
-
-    cio = begin_checksum_read(io)
-    sz, version = read_obj_start(cio)
-    pmax = position(cio) + sz
-
-
 
     # Messages
     dataspace = ReadDataspace()
@@ -38,136 +50,33 @@ function load_dataset(f::JLDFile, offset::RelOffset)
     data_length::Int = -1
     chunked_storage::Bool = false
     filter_id::UInt16 = 0
-    while position(cio) <= pmax-4
-        msg = jlread(cio, HeaderMessage)
-        endpos = position(cio) + msg.size
-        if msg.msg_type == HM_DATASPACE
-            dataspace = read_dataspace_message(cio)
-        elseif msg.msg_type == HM_DATATYPE
-            datatype_class, datatype_offset = read_datatype_message(cio, f, (msg.flags & 2) == 2)
-        elseif msg.msg_type == HM_FILL_VALUE
-            (jlread(cio, UInt8) == 3 && jlread(cio, UInt8) == 0x09) || throw(UnsupportedFeatureException())
-        elseif msg.msg_type == HM_DATA_LAYOUT
-            jlread(cio, UInt8) == 4 || throw(UnsupportedVersionException())
-            storage_type = jlread(cio, UInt8)
-            if storage_type == LC_COMPACT_STORAGE
-                data_length = jlread(cio, UInt16)
-                data_offset = position(cio)
-            elseif storage_type == LC_CONTIGUOUS_STORAGE
-                data_offset = fileoffset(f, jlread(cio, RelOffset))
-                data_length = jlread(cio, Length)
-            elseif storage_type == LC_CHUNKED_STORAGE
-                # TODO: validate this
-                flags = jlread(cio, UInt8)
-                dimensionality = jlread(cio, UInt8)
-                dimensionality_size = jlread(cio, UInt8)
-                skip(cio, Int(dimensionality)*Int(dimensionality_size))
-
-                chunk_indexing_type = jlread(cio, UInt8)
-                chunk_indexing_type == 1 || throw(UnsupportedFeatureException("Unknown chunk indexing type"))
-                data_length = jlread(cio, Length)
-                jlread(cio, UInt32)
-                data_offset = fileoffset(f, jlread(cio, RelOffset))
-                chunked_storage = true
-            else
-                throw(UnsupportedFeatureException("Unknown data layout"))
-            end
-        elseif msg.msg_type == HM_FILTER_PIPELINE
-            version = jlread(cio, UInt8)
-            version == 2 || throw(UnsupportedVersionException("Filter Pipeline Message version $version is not implemented"))
-            nfilters = jlread(cio, UInt8)
-            nfilters == 1 || throw(UnsupportedFeatureException())
-            filter_id = jlread(cio, UInt16)
-            issupported_filter(filter_id) || throw(UnsupportedFeatureException("Unknown Compression Filter $filter_id"))
-        elseif msg.msg_type == HM_ATTRIBUTE
-            if attrs === EMPTY_READ_ATTRIBUTES
-                attrs = ReadAttribute[read_attribute(cio, f)]
-            else
-                push!(attrs, read_attribute(cio, f))
-            end
-        elseif (msg.flags & 2^3) != 0
-            throw(UnsupportedFeatureException())
+    while (curpos = position(cio)) <= chunk_end-4
+        if header_version == 1
+            msg_type = jlread(cio, UInt16)
+            msg_size = jlread(cio, UInt16)
+            flags = jlread(cio, UInt8)
+            jlread(cio, UInt8); jlread(cio, UInt16)
+            endpos = curpos + 8 + msg_size
+            endpos = endpos + 8 - mod1(endpos, 8)
+            msg = (; msg_type, size=msg_size, flags)
+            # println("Message Type: $msg_type $(MESSAGE_TYPES[msg_type])")
+            # println("Message Size: $msg_size")
+            # println("Message flags: $flags")
+            # println("Message ends at $endpos")
+        else # header_version == 2
+            msg = jlread(cio, HeaderMessage)
+            endpos = curpos + jlsizeof(HeaderMessage) + msg.size
         end
-        seek(cio, endpos)
-    end
-    seek(cio, pmax)
-
-    filter_id != 0 && !chunked_storage && throw(InvalidDataException("Compressed data must be chunked"))
-
-    # Checksum
-    end_checksum(cio) == jlread(io, UInt32) || throw(InvalidDataException("Invalid Checksum"))
-
-    # TODO verify that data length matches
-    val = read_data(f, dataspace, datatype_class, datatype_offset, data_offset, data_length,
-                    filter_id, offset, attrs)
-    val
-end
-
-function load_v1_dataset(f::JLDFile, offset::RelOffset)
-    
-    io = f.io
-    seek(io, fileoffset(f, offset))
-    #sz, version = read_obj_start(io)
-    version = jlread(io, UInt8)
-    version == 1 || throw(error("This should not have happened"))
-
-    cio = io
-    
-
-    jlread(io, UInt8)
-    num_messages = jlread(io, UInt16)
-    #println("Reading $num_messages Messages")
-    obj_ref_count = jlread(io, UInt32)
-    #println("obj_ref_count = $obj_ref_count")
-    obj_header_size = jlread(io, UInt32)
-    #println("obj_header_size = $obj_header_size")
-
-    pmax = position(cio) + obj_header_size
-    #println(pmax)
-    #println(cio === io)
-    # Skip to nearest 8byte aligned position
-    curpos = position(io)
-    skippos = curpos + 8 - mod(curpos, 8)
-    seek(io, skippos)
-
-    # Messages
-    dataspace = ReadDataspace()
-    attrs = EMPTY_READ_ATTRIBUTES
-    datatype_class::UInt8 = 0
-    datatype_offset::Int64 = 0
-    data_offset::Int64 = 0
-    data_length::Int = -1
-    chunked_storage::Bool = false
-    filter_id::UInt16 = 0
-    while position(cio) <= pmax
-        curpos = position(io)
-        msg_type = jlread(io, UInt16)
-        #println("Message Type: $msg_type $(MESSAGE_TYPES[msg_type])")
-        msg_size = jlread(io, UInt16)
-        #println("Message Size: $msg_size")
-        msg_flags = jlread(io, UInt8)
-        #println("Message flags: $msg_flags")
-        #println("should be zero $(jlread(io, UInt8))");
-        #println("should be zero $(jlread(io, UInt16))");
-        endpos = curpos + 8 + msg_size
-        endpos = endpos + 8 - mod1(endpos, 8)
-        #println(endpos)
-        msg = (;msg_type, size=msg_size, flags=msg_flags)
         if msg.msg_type == HM_DATASPACE
             dataspace = read_dataspace_message(cio)
         elseif msg.msg_type == HM_DATATYPE
             datatype_class, datatype_offset = read_datatype_message(cio, f, (msg.flags & 2) == 2)
-            #println("datatype class $datatype_class")
         elseif msg.msg_type == HM_FILL_VALUE_OLD
             #(jlread(cio, UInt8) == 3 && jlread(cio, UInt8) == 0x09) || throw(UnsupportedFeatureException())
-            #println("Don't know what to do with old fill value")
         elseif msg.msg_type == HM_FILL_VALUE
-            #println("Don't know what to do with fill value")
             #(jlread(cio, UInt8) == 3 && jlread(cio, UInt8) == 0x09) || throw(UnsupportedFeatureException())
         elseif msg.msg_type == HM_DATA_LAYOUT
             version = jlread(cio, UInt8)
-            #println(version)
-            #jlread(cio, UInt8) == 4 || throw(UnsupportedVersionException())
             if version == 4 || version == 3
                 storage_type = jlread(cio, UInt8)
                 if storage_type == LC_COMPACT_STORAGE
@@ -211,17 +120,18 @@ function load_v1_dataset(f::JLDFile, offset::RelOffset)
         end
         seek(cio, endpos)
     end
-    seek(cio, pmax)
+    seek(cio, chunk_end)
 
     filter_id != 0 && !chunked_storage && throw(InvalidDataException("Compressed data must be chunked"))
-
-   
+    if header_version == 2
+        # Checksum
+        end_checksum(cio) == jlread(io, UInt32) || throw(InvalidDataException("Invalid Checksum"))
+    end
     # TODO verify that data length matches
     val = read_data(f, dataspace, datatype_class, datatype_offset, data_offset, data_length,
                     filter_id, offset, attrs)
     val
 end
-
 
 """
     read_attr_data(f::JLDFile, attr::ReadAttribute)

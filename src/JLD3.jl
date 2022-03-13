@@ -522,7 +522,6 @@ printtoc(io::IO, f::JLDFile; numlines = typemax(Int64)) =
 
 include("object_headers.jl")
 include("groups.jl")
-include("btree_groups.jl")
 include("dataspaces.jl")
 include("attributes.jl")
 include("datatypes.jl")
