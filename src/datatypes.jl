@@ -14,6 +14,19 @@ const DT_ENUMERATED = UInt8(8) #| (UInt8(3) << 4)
 const DT_VARIABLE_LENGTH = UInt8(9) #| (UInt8(3) << 4)
 const DT_ARRAY = UInt8(10) #| (UInt8(3) << 4)
 
+const DATATYPES = Dict{UInt8, String}(
+    0 => "DT_FIXED_POINT",
+    1 => "DT_FLOATING_POINT",
+    2 => "DT_TIME",
+    3 => "DT_STRING",
+    4 => "DT_BITFIELD",
+    5 => "DT_OPAQUE",
+    6 => "DT_COMPOUND",
+    7 => "DT_REFERENCE",
+    8 => "DT_ENUMERATED",
+    9 => "DT_VARIABLE_LENGTH",
+    10=> "DT_ARRAY")
+
 # This is the description for:
 #    Strings
 #    Opaque datatypes
@@ -33,6 +46,15 @@ OpaqueDatatype(size::Integer) =
 ReferenceDatatype() =
     BasicDatatype(DT_REFERENCE, 0x00, 0x00, 0x00, jlsizeof(RelOffset))
 
+function Base.:(==)(dt1::BasicDatatype, dt2::BasicDatatype)
+    ret = true
+    ret &= (dt1.class << 4) == (dt2.class << 4)
+    ret &= dt1.bitfield1 == dt2.bitfield1
+    ret &= dt1.bitfield2 == dt2.bitfield2
+    ret &= dt1.bitfield3 == dt2.bitfield3
+    ret &= dt1.size == dt2.size
+    ret
+end
 # Reads a datatype message and returns a (offset::RelOffset, class::UInt8)
 # tuple. If the datatype is committed, the offset is the offset of the
 # committed datatype and the class is typemax(UInt8). Otherwise, the

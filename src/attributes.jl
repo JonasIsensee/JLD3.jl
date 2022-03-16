@@ -48,22 +48,51 @@ function write_attribute(io::IO, f::JLDFile, attr::WrittenAttribute, wsession::J
     write_data(io, f, attr.data, odr, datamode(odr), wsession)
 end
 
+function skip_to_aligned!(io, rel=0)
+    pos = position(io)
+    pos += 8 - mod1(pos-rel, 8)
+    seek(io, pos)
+    return nothing
+end
+
 function read_attribute(io::IO, f::JLDFile)
     ah = jlread(io, AttributeHeader)
-    ah.version == 0x02 || throw(UnsupportedVersionException())
-    committed = ah.flags == 1
-    !committed && ah.flags != 0 && throw(UnsupportedFeatureException())
+    #ah.version == 0x02 || throw(UnsupportedVersionException())
+    if ah.version == 1
+        committed = false
+        name = Symbol(jlread(io, UInt8, ah.name_size-1))
+        jlread(io, UInt8) == 0 || throw(InvalidDataException())
+        skip_to_aligned!(io)
 
-    name = Symbol(jlread(io, UInt8, ah.name_size-1))
-    jlread(io, UInt8) == 0 || throw(InvalidDataException())
+        datatype_end = position(io) + ah.datatype_size
+        datatype_class, datatype_offset = read_datatype_message(io, f, committed)
+        seek(io, datatype_end)
+        skip_to_aligned!(io)
 
-    datatype_end = position(io) + ah.datatype_size
-    datatype_class, datatype_offset = read_datatype_message(io, f, committed)
-    seek(io, datatype_end)
 
-    dataspace_end = position(io) + ah.dataspace_size
-    dataspace = read_dataspace_message(io)
-    seek(io, dataspace_end)
+        dataspace_end = position(io) + ah.dataspace_size
+        dataspace = read_dataspace_message(io)
+        seek(io, dataspace_end)
+        skip_to_aligned!(io)
 
-    ReadAttribute(name, dataspace, datatype_class, datatype_offset, position(io))
+        ReadAttribute(name, dataspace, datatype_class, datatype_offset, position(io))
+    elseif ah.version == 2
+        committed = ah.flags == 1
+        !committed && ah.flags != 0 && throw(UnsupportedFeatureException())
+
+        name = Symbol(jlread(io, UInt8, ah.name_size-1))
+        jlread(io, UInt8) == 0 || throw(InvalidDataException())
+
+        datatype_end = position(io) + ah.datatype_size
+        datatype_class, datatype_offset = read_datatype_message(io, f, committed)
+        seek(io, datatype_end)
+
+        dataspace_end = position(io) + ah.dataspace_size
+        dataspace = read_dataspace_message(io)
+        seek(io, dataspace_end)
+
+        ReadAttribute(name, dataspace, datatype_class, datatype_offset, position(io))
+    else 
+        throw(UnsupportedVersionException("Unknown Attribute Header Version $(ah.version)"))
+    end
 end

@@ -37,7 +37,6 @@ function jlread(io::IO, ::Type{Superblock})
 
     # Version
     version = jlread(cio, UInt8)
-    @info "Superblock has version $version"
     if version == 0
         version_free_space_storage = jlread(cio, UInt8) # has to be zero
         version_root_group_symbol_table_enty = jlread(cio, UInt8) # has to be zero

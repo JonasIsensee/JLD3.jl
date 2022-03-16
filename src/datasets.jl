@@ -30,8 +30,8 @@ function load_dataset(f::JLDFile, offset::RelOffset)
 
         chunk_end = position(cio) + obj_header_size
         # Skip to nearest 8byte aligned position
-        curpos = position(cio)
-        seek(cio, curpos + 8 - mod1(curpos, 8))
+        skip_to_aligned!(cio, fileoffset(f, offset))
+
     elseif header_version == 2
         seek(io, fileoffset(f, offset))
         cio = begin_checksum_read(io)
@@ -57,7 +57,7 @@ function load_dataset(f::JLDFile, offset::RelOffset)
             flags = jlread(cio, UInt8)
             jlread(cio, UInt8); jlread(cio, UInt16)
             endpos = curpos + 8 + msg_size
-            endpos = endpos + 8 - mod1(endpos, 8)
+            endpos = endpos + 8 - mod1(endpos-fileoffset(f, offset), 8)
             msg = (; msg_type, size=msg_size, flags)
             # println("Message Type: $msg_type $(MESSAGE_TYPES[msg_type])")
             # println("Message Size: $msg_size")

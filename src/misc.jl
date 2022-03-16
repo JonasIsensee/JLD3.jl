@@ -100,6 +100,28 @@ function size_size(sz::Integer)
     end
 end
 
+# Get the size of the size
+function size_size2(sz::Integer)
+    if sz < 2^8
+        1
+    elseif sz < 2^16
+        2
+    elseif sz < 2^24
+        3
+    elseif sz < 2^32
+        4
+    elseif sz < 2^40
+        5
+    elseif sz < 2^48
+        6
+    elseif sz < 2^56
+        7
+    else
+        8
+    end
+end
+
+
 """
     symbol_length(x::Symbol)
 
@@ -119,3 +141,12 @@ function uintofsize(sz)
     end
 end
 
+function to_uint64(bts::Vector{UInt8})
+    bts2 = [bts; zeros(UInt8, 8-length(bts))]
+    u = zero(UInt64)
+    for b in reverse(bts2)
+        u = u << 8
+        u += b
+    end
+    u
+end

@@ -317,20 +317,18 @@ function load_file_metadata!(f)
     #verify_file_header(f)
 
     f.superblock = superblock = find_superblock(f)
-    @info superblock
-    #seek(f.io, FILE_HEADER_LENGTH)
-    #superblock = jlread(f.io, Superblock)
     f.end_of_data = superblock.end_of_file_address
     if superblock.version >= 2
         f.root_group_offset = superblock.data.root_group_object_header_address
     else
+        if f.writable
+            close(f)
+            throw(UnsupportedVersionException("This file can not be edited by JLD2. Please open in read-only mode."))
+        end
         f.root_group_offset = h5offset(f, superblock.data.obj_header_adress)
-        #load_btree_group(f, superblock.data.obj_header_adress)
     end
     f.root_group = load_group(f, f.root_group_offset)
 
-    #throw(error("stop here"))
-    #
     if haskey(f.root_group.written_links, "_types")
         types_group_offset = f.root_group.written_links["_types"]::RelOffset
         f.types_group = f.loaded_groups[types_group_offset] = load_group(f, types_group_offset)
@@ -527,6 +525,7 @@ include("attributes.jl")
 include("datatypes.jl")
 include("datasets.jl")
 include("global_heaps.jl")
+include("fractal_heaps.jl")
 
 include("data/type_defs.jl")
 include("data/specialcased_types.jl")

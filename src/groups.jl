@@ -214,6 +214,39 @@ define_packed(LinkInfo)
 
 LinkInfo() = LinkInfo(0, 0, UNDEFINED_ADDRESS, UNDEFINED_ADDRESS)
 
+struct Message
+    type::UInt8
+    header
+    fields
+end
+
+
+function read_link_info(io, msg_header, OffsetType)
+    @assert msg_header.msg_type == HM_LINK_INFO
+    version = jlread(io, UInt8)
+    flags = jlread(io, UInt8)
+    # Maximum Creation index
+    # exists if bit 0 of flag is set
+    if (flags & 0x1) == 0x1
+        max_creation_index = jlread(io, UInt64)
+    else
+        max_creation_index = typemax(UInt64)
+    end
+    fractal_heap_address = jlread(io, OffsetType)
+    v2btree_name_index = jlread(io, OffsetType)
+    if (flags & 0x1) == 0x1
+        v2btree_creation_index = jlread(io, OffsetType)
+    else
+        v2btree_creation_index = UNDEFINED_ADDRESS
+    end
+    return Message(HM_LINK_INFO,msg_header, (; 
+                    version,
+                    flags,
+                    fractal_heap_address,
+                    v2btree_creation_index, 
+                    v2btree_name_index))
+end
+
 @enum(CharacterSet,
       CSET_ASCII,
       CSET_UTF8)
@@ -263,15 +296,10 @@ function load_group(f::JLDFile, roffset::RelOffset)
     version = jlread(io, UInt8)
     if version == 1
         cio = io
-        #println("OBJ header is V1")
-        #return load_v1_group(f, roffset)
         jlread(cio, UInt8)
         num_messages = jlread(cio, UInt16)
-        #println("Reading $num_messages Messages")
         obj_ref_count = jlread(cio, UInt32)
-        #println("obj_ref_count = $obj_ref_count")
         obj_header_size = jlread(cio, UInt32)
-        #println("obj_header_size = $obj_header_size")
 
         chunk_end = position(cio) + obj_header_size
         # Skip to nearest 8byte aligned position
@@ -298,6 +326,8 @@ function load_group(f::JLDFile, roffset::RelOffset)
     est_num_entries::Int64 = 4
     est_link_name_len::Int64 = 8
     chunk_end::Int64
+    fractal_heap_address = UNDEFINED_ADDRESS
+    name_index_btree = UNDEFINED_ADDRESS
 
     while true
         if continuation_offset != -1
@@ -329,9 +359,9 @@ function load_group(f::JLDFile, roffset::RelOffset)
             end
             if msg.msg_type == HM_NIL
                 if continuation_message_goes_here == -1 && 
-                    chunk_checksum_offset - curpos == CONTINUATION_MSG_SIZE
+                    chunk_end - curpos == CONTINUATION_MSG_SIZE
                     continuation_message_goes_here = curpos
-                elseif endpos + CONTINUATION_MSG_SIZE == chunk_checksum_offset
+                elseif endpos + CONTINUATION_MSG_SIZE == chunk_end
                     # This is the remaining space at the end of a chunk
                     # Use only if a message can potentially fit inside
                     # Single Character Name Link Message has 13 bytes payload
@@ -343,7 +373,10 @@ function load_group(f::JLDFile, roffset::RelOffset)
                 continuation_message_goes_here = -1
                 if msg.msg_type == HM_LINK_INFO
                     link_info = jlread(cio, LinkInfo)
-                    link_info.fractal_heap_address == UNDEFINED_ADDRESS || throw(UnsupportedFeatureException())
+                    #link_info.fractal_heap_address == UNDEFINED_ADDRESS || throw(UnsupportedFeatureException())
+                    #link_info.fractal_heap_address == UNDEFINED_ADDRESS || println("Found a fractal heap")
+                    fractal_heap_address = link_info.fractal_heap_address
+                    name_index_btree = link_info.name_index_btree
                 elseif msg_type == HM_GROUP_INFO
                     if msg_size > 2
                         # Version Flag
@@ -383,122 +416,129 @@ function load_group(f::JLDFile, roffset::RelOffset)
         continuation_offset == -1 && break
     end
 
+    if fractal_heap_address != UNDEFINED_ADDRESS
+        records = read_btree(f, fractal_heap_address, name_index_btree)
+        for r in records
+            links[r[1]] = r[2]
+        end
+    end
+
     Group{typeof(f)}(f, chunk_start_offset, continuation_message_goes_here,        
                      chunk_end, next_link_offset, est_num_entries,
                      est_link_name_len,
                      OrderedDict{String,RelOffset}(), OrderedDict{String,Group}(), links)
 end
 
-function load_v1_group(f, roffset)
-    io = f.io
-    chunk_start_offset::Int64 = fileoffset(f, roffset)
-    seek(io, chunk_start_offset)
+# function load_v1_group(f, roffset)
+#     io = f.io
+#     chunk_start_offset::Int64 = fileoffset(f, roffset)
+#     seek(io, chunk_start_offset)
 
-    version = jlread(io, UInt8)
-    version == 1 || throw(error("This should not have happened"))
+#     version = jlread(io, UInt8)
+#     version == 1 || throw(error("This should not have happened"))
     
-    jlread(io, UInt8)
-    num_messages = jlread(io, UInt16)
-    #println("Reading $num_messages Messages")
-    obj_ref_count = jlread(io, UInt32)
-    #println("obj_ref_count = $obj_ref_count")
-    obj_header_size = jlread(io, UInt32)
-    #println("obj_header_size = $obj_header_size")
+#     jlread(io, UInt8)
+#     num_messages = jlread(io, UInt16)
+#     #println("Reading $num_messages Messages")
+#     obj_ref_count = jlread(io, UInt32)
+#     #println("obj_ref_count = $obj_ref_count")
+#     obj_header_size = jlread(io, UInt32)
+#     #println("obj_header_size = $obj_header_size")
 
-    chunk_end::Int64 = position(io) + obj_header_size
+#     chunk_end::Int64 = position(io) + obj_header_size
 
-    # Skip to nearest 8byte aligned position
-    curpos = position(io)
-    skippos = curpos + 8 - mod1(curpos, 8)
-    seek(io, skippos)
+#     # Skip to nearest 8byte aligned position
+#     curpos = position(io)
+#     skippos = curpos + 8 - mod1(curpos, 8)
+#     seek(io, skippos)
 
-    # Messages
-    continuation_message_goes_here::Int64 = -1
-    links = OrderedDict{String,RelOffset}()
+#     # Messages
+#     continuation_message_goes_here::Int64 = -1
+#     links = OrderedDict{String,RelOffset}()
 
-    continuation_offset::Int64 = -1
-    continuation_length::Length = 0
-    next_link_offset::Int64 = -1
-    link_phase_change_max_compact::Int64 = -1 
-    link_phase_change_min_dense::Int64 = -1
-    est_num_entries::Int64 = 4
-    est_link_name_len::Int64 = 8
+#     continuation_offset::Int64 = -1
+#     continuation_length::Length = 0
+#     next_link_offset::Int64 = -1
+#     link_phase_change_max_compact::Int64 = -1 
+#     link_phase_change_min_dense::Int64 = -1
+#     est_num_entries::Int64 = 4
+#     est_link_name_len::Int64 = 8
 
-    while true
-        if continuation_offset != -1
-            seek(io, continuation_offset)
-            chunk_end = continuation_offset + continuation_length
-            continuation_offset = -1
+#     while true
+#         if continuation_offset != -1
+#             seek(io, continuation_offset)
+#             chunk_end = continuation_offset + continuation_length
+#             continuation_offset = -1
 
-            #jlread(io, UInt32) == OBJECT_HEADER_CONTINUATION_SIGNATURE || throw(InvalidDataException())
-            # No special signature for V1 Object headers
-        end
+#             #jlread(io, UInt32) == OBJECT_HEADER_CONTINUATION_SIGNATURE || throw(InvalidDataException())
+#             # No special signature for V1 Object headers
+#         end
 
-        while (curpos = position(io)) < chunk_end
-            msg_type = jlread(io, UInt16)
-            #println("Message Type: $msg_type $(MESSAGE_TYPES[msg_type])")
-            msg_size = jlread(io, UInt16)
-            #println("Message Size: $msg_size")
-            msg_flags = jlread(io, UInt8)
-            #println("Message flags: $msg_flags")
-            jlread(io, UInt8); jlread(io, UInt16)
-            endpos = curpos + 8 + msg_size
-            endpos = endpos + 8 - mod1(endpos, 8)
-            if msg_type == HM_NIL
-                if continuation_message_goes_here == -1 && 
-                    chunk_end - curpos == CONTINUATION_MSG_SIZE
-                    continuation_message_goes_here = curpos
-                elseif endpos + CONTINUATION_MSG_SIZE == chunk_end
-                    # This is the remaining space at the end of a chunk
-                    # Use only if a message can potentially fit inside
-                    # Single Character Name Link Message has 13 bytes payload
-                    if msg.size >= 13 
-                        next_link_offset = curpos
-                    end
-                end
-            else
-                continuation_message_goes_here = -1
-                if msg_type == HM_LINK_INFO
-                    link_info = jlread(io, LinkInfo)
-                    link_info.fractal_heap_address == UNDEFINED_ADDRESS || throw(UnsupportedFeatureException())
-                elseif msg_type == HM_GROUP_INFO
-                    if msg_size > 2
-                        # Version Flag
-                        jlread(io, UInt8) == 0 || throw(UnsupportedFeatureException()) 
-                        flag = jlread(io, UInt8)
-                        if flag%2 == 1 # first bit set
-                            link_phase_change_max_compact = jlread(io, UInt16)
-                            link_phase_change_min_dense = jlread(io, UInt16)
-                        end
-                        if (flag >> 1)%2 == 1 # second bit set
-                            # Verify that non-default group size is given
-                            est_num_entries = jlread(io, UInt16)
-                            est_link_name_len = jlread(io, UInt16)
-                        end
-                    end
-                elseif msg_type == HM_LINK_MESSAGE
-                    name, loffset = read_link(io)
-                    links[name] = loffset
-                elseif msg_type == HM_OBJECT_HEADER_CONTINUATION
-                    continuation_offset = chunk_start_offset = fileoffset(f, jlread(io, RelOffset))
-                    continuation_length = jlread(io, Length)
-                    println("Next chunk at $continuation_offset with length=$continuation_length")
-                    # For correct behaviour, empty space can only be filled in the 
-                    # very last chunk. Forget about previously found empty space
-                    next_link_offset = -1
-                elseif (msg_flags & 2^3) != 0
-                    throw(UnsupportedFeatureException())
-                end
-            end
-            seek(io, endpos)
-        end
-        continuation_offset == -1 && break
-    end
-    return Group{typeof(f)}(f, chunk_start_offset, continuation_message_goes_here,        
-                     chunk_end, next_link_offset, est_num_entries,
-                     est_link_name_len,
-                     OrderedDict{String,RelOffset}(), OrderedDict{String,Group}(), links)
-end
+#         while (curpos = position(io)) < chunk_end
+#             msg_type = jlread(io, UInt16)
+#             #println("Message Type: $msg_type $(MESSAGE_TYPES[msg_type])")
+#             msg_size = jlread(io, UInt16)
+#             #println("Message Size: $msg_size")
+#             msg_flags = jlread(io, UInt8)
+#             #println("Message flags: $msg_flags")
+#             jlread(io, UInt8); jlread(io, UInt16)
+#             endpos = curpos + 8 + msg_size
+#             endpos = endpos + 8 - mod1(endpos, 8)
+#             if msg_type == HM_NIL
+#                 if continuation_message_goes_here == -1 && 
+#                     chunk_end - curpos == CONTINUATION_MSG_SIZE
+#                     continuation_message_goes_here = curpos
+#                 elseif endpos + CONTINUATION_MSG_SIZE == chunk_end
+#                     # This is the remaining space at the end of a chunk
+#                     # Use only if a message can potentially fit inside
+#                     # Single Character Name Link Message has 13 bytes payload
+#                     if msg.size >= 13 
+#                         next_link_offset = curpos
+#                     end
+#                 end
+#             else
+#                 continuation_message_goes_here = -1
+#                 if msg_type == HM_LINK_INFO
+#                     link_info = jlread(io, LinkInfo)
+#                     link_info.fractal_heap_address == UNDEFINED_ADDRESS || throw(UnsupportedFeatureException())
+#                 elseif msg_type == HM_GROUP_INFO
+#                     if msg_size > 2
+#                         # Version Flag
+#                         jlread(io, UInt8) == 0 || throw(UnsupportedFeatureException()) 
+#                         flag = jlread(io, UInt8)
+#                         if flag%2 == 1 # first bit set
+#                             link_phase_change_max_compact = jlread(io, UInt16)
+#                             link_phase_change_min_dense = jlread(io, UInt16)
+#                         end
+#                         if (flag >> 1)%2 == 1 # second bit set
+#                             # Verify that non-default group size is given
+#                             est_num_entries = jlread(io, UInt16)
+#                             est_link_name_len = jlread(io, UInt16)
+#                         end
+#                     end
+#                 elseif msg_type == HM_LINK_MESSAGE
+#                     name, loffset = read_link(io)
+#                     links[name] = loffset
+#                 elseif msg_type == HM_OBJECT_HEADER_CONTINUATION
+#                     continuation_offset = chunk_start_offset = fileoffset(f, jlread(io, RelOffset))
+#                     continuation_length = jlread(io, Length)
+#                     println("Next chunk at $continuation_offset with length=$continuation_length")
+#                     # For correct behaviour, empty space can only be filled in the 
+#                     # very last chunk. Forget about previously found empty space
+#                     next_link_offset = -1
+#                 elseif (msg_flags & 2^3) != 0
+#                     throw(UnsupportedFeatureException())
+#                 end
+#             end
+#             seek(io, endpos)
+#         end
+#         continuation_offset == -1 && break
+#     end
+#     return Group{typeof(f)}(f, chunk_start_offset, continuation_message_goes_here,        
+#                      chunk_end, next_link_offset, est_num_entries,
+#                      est_link_name_len,
+#                      OrderedDict{String,RelOffset}(), OrderedDict{String,Group}(), links)
+# end
 
 """
     link_size(name::String)

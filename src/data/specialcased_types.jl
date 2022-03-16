@@ -25,7 +25,7 @@ odr(::Type{String}) = fieldodr(String, true)
 objodr(x::String) = FixedLengthString{String}(jlsizeof(x))
 
 function jltype(f::JLDFile, dt::BasicDatatype)
-    if dt.class == DT_STRING
+    if (dt.class << 4 >> 4) == DT_STRING
         if (dt.bitfield1 == 0x01 || dt.bitfield1 == 0x11) && dt.bitfield2 == 0x00 && dt.bitfield3 == 0x00
             return FixedLengthString{String}(dt.size)
         else
